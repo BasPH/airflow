@@ -58,6 +58,7 @@ operators:
 sensors:
   - integration-name: Kubernetes
     python-modules:
+      - airflow.providers.cncf.kubernetes.sensors.kubernetes_pod
       - airflow.providers.cncf.kubernetes.sensors.spark_kubernetes
 
 hooks:
