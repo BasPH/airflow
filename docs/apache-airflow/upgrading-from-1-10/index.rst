@@ -299,7 +299,7 @@ When DAGs are initialized with the ``access_control`` variable set, any usage of
     as it is the only default UI.
 
     If you previously used non-RBAC UI, you have to switch to the new RBAC-UI and create users to be able
-    to access Airflow's webserver. For more details on CLI to create users see :doc:`/cli-and-env-variables-ref`
+    to access Airflow's webserver. For more details on CLI to create users see :doc:`/cli-ref`.
 
 Please note that custom auth backends will need re-writing to target new FAB based UI.
 

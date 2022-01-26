@@ -15,32 +15,8 @@
     specific language governing permissions and limitations
     under the License.
 
-.. _cli:
-
-Command Line Interface and Environment Variables Reference
-==========================================================
-
-Command Line Interface
-''''''''''''''''''''''
-
-Airflow has a very rich command line interface that allows for
-many types of operation on a DAG, starting services, and supporting
-development and testing.
-
-.. note::
-    For more information on usage CLI, see :doc:`usage-cli`
-
-.. contents:: Content
-    :local:
-    :depth: 2
-
-.. argparse::
-   :module: airflow.cli.cli_parser
-   :func: get_parser
-   :prog: airflow
-
-Environment Variables
-'''''''''''''''''''''
+Environment Variables Reference
+===============================
 
 .. envvar:: AIRFLOW__{SECTION}__{KEY}
 

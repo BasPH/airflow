@@ -109,7 +109,8 @@ unit of work and continuity.
     :caption: References
 
     Operators and hooks <operators-and-hooks-ref>
-    CLI <cli-and-env-variables-ref>
+    CLI <cli-ref>
+    Environment variables <env-variables-ref>
     Templates <templates-ref>
     Python API <python-api-ref>
     Stable REST API <stable-rest-api-ref>
