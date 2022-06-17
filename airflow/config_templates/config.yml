@@ -1913,13 +1913,6 @@
       type: integer
       example: ~
       default: "60"
-    - name: dag_dir_list_interval
-      description: |
-        How often (in seconds) to scan the DAGs directory for new files. Default to 5 minutes.
-      version_added: ~
-      type: string
-      example: ~
-      default: "300"
     - name: print_stats_interval
       description: |
         How often should stats be printed to the logs. Setting to 0 will disable printing stats

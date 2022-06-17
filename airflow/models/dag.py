@@ -2916,6 +2916,26 @@ class DagModel(Base):
                 continue
 
     @classmethod
+    @provide_session
+    def deactivate_by_filepaths(cls, filepaths: List[str], session=NEW_SESSION):
+        """
+        Set DAGs at given filepaths to ``is_active=False``.
+
+        :param filepaths: DAG filepaths to deactivate
+        :param session: ORM Session
+        """
+
+        log.debug("Deactivating DAGs in %s", filepaths)
+
+        dag_models = session.query(cls).all()
+        for dag_model in dag_models:
+            if dag_model.fileloc in filepaths:
+                dag_model.is_active = False
+                log.debug("Deactivated DAG %s with filepath %s", dag_model.dag_id, dag_model.fileloc)
+            else:
+                continue
+
+    @classmethod
     def dags_needing_dagruns(cls, session: Session):
         """
         Return (and lock) a list of Dag objects that are due to create a new DagRun.

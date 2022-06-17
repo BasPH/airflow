@@ -736,8 +736,7 @@ class TestDagFileProcessorManager:
         dag = dagbag.get_dag("test_zip_dag")
         dag.sync_to_db()
         SerializedDagModel.write_dag(dag)
-        manager.last_dag_dir_refresh_time = timezone.utcnow() - timedelta(minutes=10)
-        manager._refresh_dag_dir()
+        manager._refresh_dag_files(filepath=tmpdir)
         # Assert dag not deleted in SDM
         assert SerializedDagModel.has_dag('test_zip_dag')
         # assert code not deleted

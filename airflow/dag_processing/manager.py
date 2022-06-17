@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Union, 
 from setproctitle import setproctitle
 from sqlalchemy.orm import Session
 from tabulate import tabulate
+from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileSystemEvent, PatternMatchingEventHandler
+from watchdog.observers import Observer
 
 import airflow.models
 from airflow.callbacks.callback_requests import CallbackRequest
@@ -424,8 +426,6 @@ class DagFileProcessorManager(LoggingMixin):
         # Map from file path to stats about the file
         self._file_stats: Dict[str, DagFileStat] = {}
 
-        # Last time that the DAG dir was traversed to look for files
-        self.last_dag_dir_refresh_time = timezone.make_aware(datetime.fromtimestamp(0))
         # Last time stats were printed
         self.last_stat_print_time = 0
         # Last time we cleaned up DAGs which are no longer in files
@@ -434,8 +434,6 @@ class DagFileProcessorManager(LoggingMixin):
         self.deactivate_stale_dags_interval = conf.getint('scheduler', 'deactivate_stale_dags_interval')
         # How long to wait before timing out a process to parse a DAG file
         self._processor_timeout = processor_timeout
-        # How often to scan the DAGs directory for new files. Default to 5 minutes.
-        self.dag_dir_list_interval = conf.getint('scheduler', 'dag_dir_list_interval')
 
         # Mapping file name and callbacks requests
         self._callback_to_execute: Dict[str, List[CallbackRequest]] = defaultdict(list)
@@ -448,6 +446,12 @@ class DagFileProcessorManager(LoggingMixin):
             }
             if self._direct_scheduler_conn is not None
             else {}
+        )
+
+        dags_directory_event_handler = AirflowFileSystemEventHandler(dag_file_processor_manager=self)
+        self.observer = Observer()  # class watching for file system changes
+        self.observer.schedule(
+            event_handler=dags_directory_event_handler, path=self._dag_directory, recursive=True
         )
 
     def register_exit_signals(self):
@@ -475,13 +479,16 @@ class DagFileProcessorManager(LoggingMixin):
         """
         self.register_exit_signals()
 
+        # Refresh the DAGs directory once. After that watch new files using listener.
+        self._refresh_dag_files(self._dag_directory)
+
+        self.observer.start()
+        self.log.info("Started watching file changes in %s", self._dag_directory)
+
         set_new_process_group()
 
         self.log.info("Processing files using up to %s processes at a time ", self._parallelism)
         self.log.info("Process each file at most once every %s seconds", self._file_process_interval)
-        self.log.info(
-            "Checking for new files in %s every %s seconds", self._dag_directory, self.dag_dir_list_interval
-        )
 
         return self._run_parsing_loop()
 
@@ -538,7 +545,6 @@ class DagFileProcessorManager(LoggingMixin):
         else:
             poll_time = None
 
-        self._refresh_dag_dir()
         self.prepare_file_path_queue()
         max_callbacks_per_loop = conf.getint("scheduler", "max_callbacks_per_loop")
         standalone_dag_processor = conf.getboolean("scheduler", "standalone_dag_processor")
@@ -595,7 +601,6 @@ class DagFileProcessorManager(LoggingMixin):
             if standalone_dag_processor:
                 self._fetch_callbacks(max_callbacks_per_loop)
             self._deactivate_stale_dags()
-            self._refresh_dag_dir()
 
             self._kill_timed_out_processors()
 
@@ -689,47 +694,68 @@ class DagFileProcessorManager(LoggingMixin):
             ]
         self._file_path_queue.insert(0, request.full_filepath)
 
-    def _refresh_dag_dir(self):
-        """Refresh file paths from dag dir if we haven't done it for too long."""
-        now = timezone.utcnow()
-        elapsed_time_since_refresh = (now - self.last_dag_dir_refresh_time).total_seconds()
-        if elapsed_time_since_refresh > self.dag_dir_list_interval:
-            # Build up a list of Python files that could contain DAGs
-            self.log.info("Searching for files in %s", self._dag_directory)
-            self._file_paths = list_py_file_paths(self._dag_directory)
-            self.last_dag_dir_refresh_time = now
-            self.log.info("There are %s files in %s", len(self._file_paths), self._dag_directory)
-            self.set_file_paths(self._file_paths)
+    def discover_file_paths_to_monitor(self, filepath: str) -> None:
+        """
+        Check for Airflow DAG scripts to monitor in the given directory or file path.
 
-            try:
-                self.log.debug("Removing old import errors")
-                self.clear_nonexistent_import_errors()
-            except Exception:
-                self.log.exception("Error removing old import errors")
+        :param filepath:
+        :return:
+        """
 
-            # Check if file path is a zipfile and get the full path of the python file.
-            # Without this, SerializedDagModel.remove_deleted_files would delete zipped dags.
-            # Likewise DagCode.remove_deleted_code
-            dag_filelocs = []
-            for fileloc in self._file_paths:
-                if not fileloc.endswith(".py") and zipfile.is_zipfile(fileloc):
-                    with zipfile.ZipFile(fileloc) as z:
-                        dag_filelocs.extend(
-                            [
-                                os.path.join(fileloc, info.filename)
-                                for info in z.infolist()
-                                if might_contain_dag(info.filename, True, z)
-                            ]
-                        )
-                else:
-                    dag_filelocs.append(fileloc)
+        self.log.info("Searching for Airflow DAG scripts to monitor in %s", filepath)
+        airflow_dag_filepaths = list_py_file_paths(filepath)
 
-            SerializedDagModel.remove_deleted_dags(dag_filelocs)
-            DagModel.deactivate_deleted_dags(self._file_paths)
+        self.log.info("Discovered %s file(s) to monitor in %s", len(airflow_dag_filepaths), filepath)
+        self.log.debug("Discovered file(s) to monitor: %s", airflow_dag_filepaths)
 
-            from airflow.models.dagcode import DagCode
+        self.set_file_paths(self._file_paths + airflow_dag_filepaths)
 
-            DagCode.remove_deleted_code(dag_filelocs)
+    @staticmethod
+    def remove_deleted_dag_metadata(filepaths: Union[str, List[str]]):
+        """
+        Check if file path is a zipfile and get the full path of the Python file. Without this,
+        SerializedDagModel.remove_deleted_files would delete zipped DAGs. Likewise
+        DagCode.remove_deleted_code.
+
+        :param filepaths:
+        :return:
+        """
+
+        if isinstance(filepaths, str):
+            filepaths = [filepaths]
+
+        dag_filelocs = []
+        for fileloc in filepaths:
+            if not fileloc.endswith(".py") and zipfile.is_zipfile(fileloc):
+                with zipfile.ZipFile(fileloc) as z:
+                    dag_filelocs.extend(
+                        [
+                            os.path.join(fileloc, info.filename)
+                            for info in z.infolist()
+                            if might_contain_dag(info.filename, True, z)
+                        ]
+                    )
+            else:
+                dag_filelocs.append(fileloc)
+
+        SerializedDagModel.remove_deleted_dags(dag_filelocs)
+        DagModel.deactivate_deleted_dags(filepaths)
+
+        from airflow.models.dagcode import DagCode
+
+        DagCode.remove_deleted_code(dag_filelocs)
+
+    def _refresh_dag_files(self, filepath: str) -> None:
+        """
+        Refresh filepaths to monitor (e.g. DAG folder or specific file).
+
+        :param filepath: Directory or specific file path
+        :return:
+        """
+
+        self.discover_file_paths_to_monitor(filepath=filepath)
+        self.clear_obsolete_import_errors(filepaths=filepath)
+        self.remove_deleted_dag_metadata(filepaths=filepath)
 
     def _print_stat(self):
         """Occasionally print out stats about how fast the files are getting processed"""
@@ -738,18 +764,79 @@ class DagFileProcessorManager(LoggingMixin):
                 self._log_file_processing_stats(self._file_paths)
             self.last_stat_print_time = time.monotonic()
 
+    @staticmethod
     @provide_session
-    def clear_nonexistent_import_errors(self, session):
+    def remove_dag_metadata(filepath: str, session: Session = NEW_SESSION) -> None:
+        """
+        Remove metadata for a given DAG filepath. This assumes the file has already been deleted, so is no
+        longer accessible.
+
+        :param filepath:
+        :param session:
+        :return:
+        """
+
+        from airflow.models.dagcode import DagCode
+
+        filepaths = []
+        if filepath.endswith(".zip"):
+            # Here we receive a .zip path from the filesystem event listener. However, DAGs inside zip files
+            # are registered in the DB as archive.zip/dag.py. We're assuming the .zip has already been deleted
+            # so we must lookup all paths in the DB.
+            filepaths = [
+                filepath
+                for (filepath,) in session.query(DagCode.fileloc)
+                .filter(DagCode.fileloc.startswith(filepath))
+                .all()
+            ]
+        else:
+            # Assuming a *.py path here
+            filepaths.append(filepath)
+
+        SerializedDagModel.remove_by_filepaths(filepaths=filepaths)
+        DagModel.deactivate_by_filepaths(filepaths=filepaths)
+        DagCode.remove_by_filepaths(filepaths=filepaths)
+
+    @provide_session
+    def clear_import_errors(self, filepath: str, session: Session = NEW_SESSION):
+        """
+        Clear import errors for given filepath.
+
+        :param filepath: Path for which to clear import errors
+        :param session: session for ORM operations
+        :return:
+        """
+
+        try:
+            self.log.debug("Clearing import errors for %s", filepath)
+            query = session.query(errors.ImportError).filter(errors.ImportError.filename == filepath)
+            query.delete(synchronize_session='fetch')
+            session.commit()
+        except Exception as e:
+            self.log.exception("Error removing import errors: %s", e)
+
+    @provide_session
+    def clear_obsolete_import_errors(self, filepaths: Union[str, List[str]], session: Session = NEW_SESSION):
         """
         Clears import errors for files that no longer exist.
 
+        :param filepaths: Single path or list of paths for which to clear import errors
         :param session: session for ORM operations
+        :return:
         """
-        query = session.query(errors.ImportError)
-        if self._file_paths:
-            query = query.filter(~errors.ImportError.filename.in_(self._file_paths))
-        query.delete(synchronize_session='fetch')
-        session.commit()
+
+        try:
+            self.log.debug("Clearing import errors for obsolete file paths")
+            query = session.query(errors.ImportError)
+            if isinstance(filepaths, str):
+                # TODO write string equals query
+                query = query.filter(~errors.ImportError.filename.in_([filepaths]))
+            else:
+                query = query.filter(~errors.ImportError.filename.in_(filepaths))
+            query.delete(synchronize_session='fetch')
+            session.commit()
+        except Exception:
+            self.log.exception("Error removing old import errors")
 
     def _log_file_processing_stats(self, known_file_paths):
         """
@@ -1119,6 +1206,10 @@ class DagFileProcessorManager(LoggingMixin):
         Stops all running processors
         :return: None
         """
+        self.observer.stop()
+        self.observer.join()
+        self.log.info("Stopped watching file changes in %s", self._dag_directory)
+
         for processor in self._processors.values():
             Stats.decr('dag_processing.processes')
             processor.terminate()
@@ -1149,3 +1240,55 @@ class DagFileProcessorManager(LoggingMixin):
     @property
     def file_paths(self):
         return self._file_paths
+
+
+class AirflowFileSystemEventHandler(PatternMatchingEventHandler, LoggingMixin):
+    """This class is responsible for handling file system events, such as a file creation."""
+
+    def __init__(self, dag_file_processor_manager: DagFileProcessorManager):
+        # Events on directories are ignored because dir events also trigger on nested files
+        PatternMatchingEventHandler.__init__(self, patterns=["*.py", "*.zip"], ignore_directories=True)
+        self.dag_file_processor_manager = dag_file_processor_manager
+
+    def on_any_event(self, event: FileSystemEvent):
+        """
+        Activities on any events, such as logging & metrics.
+
+        :param event:
+        :return:
+        """
+
+        self.log.debug("Registered event [%s] on: [%s]", event.event_type, event.src_path)
+
+        # https://pythonhosted.org/watchdog/api.html#event-classes
+        Stats.incr(f"dag_processing.dags_directory.events.{event.event_type}")
+
+    def on_created(self, event: FileCreatedEvent):
+        """
+        https://pythonhosted.org/watchdog/api.html#watchdog.events.FileSystemEventHandler.on_created
+
+        :param event: We ignore directories so only expect type FileCreatedEvent
+        :return:
+        """
+        self.log.info("Detected creation of file %s, checking for DAGs", event.src_path)
+        self.dag_file_processor_manager.discover_file_paths_to_monitor(filepath=event.src_path)
+
+    def on_deleted(self, event: FileDeletedEvent):
+        """
+        https://pythonhosted.org/watchdog/api.html#watchdog.events.FileSystemEventHandler.on_deleted
+
+        :param event: We ignore directories so only expect type FileDeletedEvent
+        :return:
+        """
+
+        self.log.info("Detected deletion of file %s, deleting DAG metadata", event.src_path)
+        self.dag_file_processor_manager.clear_import_errors(filepath=event.src_path)
+        self.dag_file_processor_manager.remove_dag_metadata(filepath=event.src_path)
+
+        try:
+            self.dag_file_processor_manager.file_paths.remove(event.src_path)
+        except ValueError:
+            # The file was not in the monitored list of files, i.e. didn't contain an Airflow DAG
+            pass
+
+        self.log.info("Removed DAG metadata for file %s", event.src_path)

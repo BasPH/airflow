@@ -20,7 +20,7 @@ import struct
 from datetime import datetime
 from typing import Iterable, List, Optional
 
-from sqlalchemy import BigInteger, Column, String, Text
+from sqlalchemy import BigInteger, Column, String, Text, and_
 from sqlalchemy.sql.expression import literal
 
 from airflow.exceptions import AirflowException, DagCodeNotFound
@@ -119,6 +119,24 @@ class DagCode(Base):
                 orm_dag_code.last_updated = file_mod_time
                 orm_dag_code.source_code = cls._get_code_from_file(orm_dag_code.fileloc)
                 session.merge(orm_dag_code)
+
+    @classmethod
+    @provide_session
+    def remove_by_filepaths(cls, filepaths: List[str], session=None) -> None:
+        """
+        Remove DagCode where fileloc is in given filepaths.
+
+        :param filepaths:
+        :param session: ORM Session
+        """
+
+        log.debug("Removing %s for filepaths %s from metastore", cls.__tablename__, filepaths)
+
+        # TODO don't understand yet why code in remove_deleted_code() doesn't require str cast
+        filepath_hashes = [str(cls.dag_fileloc_hash(filepath)) for filepath in filepaths]
+        session.query(cls).filter(
+            and_(cls.fileloc_hash.in_(filepath_hashes), cls.fileloc.in_(filepaths))
+        ).delete(synchronize_session='fetch')
 
     @classmethod
     @provide_session

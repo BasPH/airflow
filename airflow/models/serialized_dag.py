@@ -51,9 +51,6 @@ class SerializedDagModel(Base):
     * ``[core] min_serialized_dag_update_interval = 30`` (s):
       serialized DAGs are updated in DB when a file gets processed by scheduler,
       to reduce DB write rate, there is a minimal interval of updating serialized DAGs.
-    * ``[scheduler] dag_dir_list_interval = 300`` (s):
-      interval of deleting serialized DAGs in DB when the files are deleted, suggest
-      to use a smaller interval such as 60
     * ``[core] compress_serialized_dags``:
       whether compressing the dag data to the Database.
 
@@ -237,6 +234,24 @@ class SerializedDagModel(Base):
         session.execute(
             cls.__table__.delete().where(
                 and_(cls.fileloc_hash.notin_(alive_fileloc_hashes), cls.fileloc.notin_(alive_dag_filelocs))
+            )
+        )
+
+    @classmethod
+    @provide_session
+    def remove_by_filepaths(cls, filepaths: List[str], session=None) -> None:
+        """
+        Delete DAGs for given filepaths.
+
+        :param filepaths: filepaths of DAGs to remove
+        :param session: ORM session
+        """
+
+        log.debug("Removing serialized DAGs in %s from metastore", filepaths)
+        filepath_hashes = [DagCode.dag_fileloc_hash(filepath) for filepath in filepaths]
+        session.execute(
+            cls.__table__.delete().where(
+                and_(cls.fileloc_hash.in_(filepath_hashes), cls.fileloc.in_(filepaths))
             )
         )
 
