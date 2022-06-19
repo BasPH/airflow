@@ -36,7 +36,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Union, 
 from setproctitle import setproctitle
 from sqlalchemy.orm import Session
 from tabulate import tabulate
-from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileSystemEvent, PatternMatchingEventHandler
+from watchdog.events import (
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileSystemEvent,
+    PatternMatchingEventHandler,
+)
 from watchdog.observers import Observer
 
 import airflow.models
@@ -1247,7 +1254,9 @@ class AirflowFileSystemEventHandler(PatternMatchingEventHandler, LoggingMixin):
 
     def __init__(self, dag_file_processor_manager: DagFileProcessorManager):
         # Events on directories are ignored because dir events also trigger on nested files
-        PatternMatchingEventHandler.__init__(self, patterns=["*.py", "*.zip"], ignore_directories=True)
+        PatternMatchingEventHandler.__init__(
+            self, patterns=["*.py", "*.zip", "*.airflowignore"], ignore_directories=True
+        )
         self.dag_file_processor_manager = dag_file_processor_manager
 
     def on_any_event(self, event: FileSystemEvent):
@@ -1263,6 +1272,15 @@ class AirflowFileSystemEventHandler(PatternMatchingEventHandler, LoggingMixin):
         # https://pythonhosted.org/watchdog/api.html#event-classes
         Stats.incr(f"dag_processing.dags_directory.events.{event.event_type}")
 
+    def on_moved(self, event: FileMovedEvent):
+        if event.src_path.endswith(".airflowignore"):
+            # TODO
+            self.log.info(
+                "Detected move of %s to %s, checking changes to make in the list of observed DAG files.",
+                event.src_path,
+                event.dest_path,
+            )
+
     def on_created(self, event: FileCreatedEvent):
         """
         https://pythonhosted.org/watchdog/api.html#watchdog.events.FileSystemEventHandler.on_created
@@ -1270,8 +1288,13 @@ class AirflowFileSystemEventHandler(PatternMatchingEventHandler, LoggingMixin):
         :param event: We ignore directories so only expect type FileCreatedEvent
         :return:
         """
-        self.log.info("Detected creation of file %s, checking for DAGs", event.src_path)
-        self.dag_file_processor_manager.discover_file_paths_to_monitor(filepath=event.src_path)
+
+        if event.src_path.endswith((".py", ".zip")):
+            self.log.info("Detected creation of file %s, checking for DAGs", event.src_path)
+            self.dag_file_processor_manager.discover_file_paths_to_monitor(filepath=event.src_path)
+        elif event.src_path.endswith(".airflowignore"):
+            # TODO
+            self.log.info("Detected creation of %s, checking for files to ignore.", event.src_path)
 
     def on_deleted(self, event: FileDeletedEvent):
         """
@@ -1281,14 +1304,23 @@ class AirflowFileSystemEventHandler(PatternMatchingEventHandler, LoggingMixin):
         :return:
         """
 
-        self.log.info("Detected deletion of file %s, deleting DAG metadata", event.src_path)
-        self.dag_file_processor_manager.clear_import_errors(filepath=event.src_path)
-        self.dag_file_processor_manager.remove_dag_metadata(filepath=event.src_path)
+        if event.src_path.endswith((".py", ".zip")):
+            self.log.info("Detected deletion of file %s, deleting DAG metadata", event.src_path)
+            self.dag_file_processor_manager.clear_import_errors(filepath=event.src_path)
+            self.dag_file_processor_manager.remove_dag_metadata(filepath=event.src_path)
 
-        try:
-            self.dag_file_processor_manager.file_paths.remove(event.src_path)
-        except ValueError:
-            # The file was not in the monitored list of files, i.e. didn't contain an Airflow DAG
+            try:
+                self.dag_file_processor_manager.file_paths.remove(event.src_path)
+            except ValueError:
+                # The file was not in the monitored list of files, i.e. didn't contain an Airflow DAG
+                pass
+
+            self.log.info("Removed DAG metadata for file %s", event.src_path)
+        elif event.src_path.endswith(".airflowignore"):
+            # TODO
+            self.log.info("Detected deletion of %s, checking for files to un-ignore.", event.src_path)
+
+    def on_modified(self, event: FileModifiedEvent):
+        if event.src_path.endswith(".airflowignore"):
+            # TODO
             pass
-
-        self.log.info("Removed DAG metadata for file %s", event.src_path)
