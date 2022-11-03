@@ -347,6 +347,7 @@ class DAG(LoggingMixin):
         Can be used as an HTTP link (for example the link to your Slack channel), or a mailto link.
         e.g: {"dag_owner": "https://airflow.apache.org/"}
     :param auto_register: Automatically register this DAG when it is used in a ``with`` block
+    :param owners: List of owners to help identify DAG ownership.
     """
 
     _comps = {
@@ -409,6 +410,7 @@ class DAG(LoggingMixin):
         tags: list[str] | None = None,
         owner_links: dict[str, str] | None = None,
         auto_register: bool = True,
+        owners: list[str] | None = None,
     ):
         from airflow.utils.task_group import TaskGroup
 
@@ -605,6 +607,8 @@ class DAG(LoggingMixin):
         # it's only use is for determining the relative
         # fileloc based only on the serialize dag
         self._processor_dags_folder = None
+
+        self.owners = owners or []
 
     def get_doc_md(self, doc_md: str | None) -> str | None:
         if doc_md is None:
@@ -1227,11 +1231,12 @@ class DAG(LoggingMixin):
     @property
     def owner(self) -> str:
         """
-        Return list of all owners found in DAG tasks.
+        Gather list of all owners in this DAG & tasks, e.g. "Bob, Alice, Eve".
 
-        :return: Comma separated list of owners in DAG tasks
+        :return: Comma separated list of owners in this DAG & tasks
         """
-        return ", ".join({t.owner for t in self.tasks})
+        all_owners = set(self.owners) | {t.owner for t in self.tasks}
+        return ", ".join(all_owners)
 
     @property
     def allow_future_exec_dates(self) -> bool:
@@ -3469,6 +3474,7 @@ def dag(
     tags: list[str] | None = None,
     owner_links: dict[str, str] | None = None,
     auto_register: bool = True,
+    owners: list[str] | None = None,
 ) -> Callable[[Callable], Callable[..., DAG]]:
     """
     Python dag decorator. Wraps a function into an Airflow DAG.
@@ -3522,6 +3528,7 @@ def dag(
                 schedule=schedule,
                 owner_links=owner_links,
                 auto_register=auto_register,
+                owners=owners,
             ) as dag_obj:
                 # Set DAG documentation from function documentation.
                 if f.__doc__:

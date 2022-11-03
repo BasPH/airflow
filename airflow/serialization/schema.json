@@ -161,7 +161,8 @@
           { "$ref": "#/definitions/task_group" }
         ]},
         "edge_info": { "$ref": "#/definitions/edge_info" },
-        "dag_dependencies": { "$ref": "#/definitions/dag_dependencies" }
+        "dag_dependencies": { "$ref": "#/definitions/dag_dependencies" },
+        "owners": { "type": "array" }
       },
       "required": [
         "_dag_id",
