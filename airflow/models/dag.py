@@ -1235,7 +1235,7 @@ class DAG(LoggingMixin):
 
         :return: Comma separated list of owners in this DAG & tasks
         """
-        all_owners = set(self.owners) | {t.owner for t in self.tasks}
+        all_owners = filter(None, set(self.owners) | {t.owner for t in self.tasks})
         return ", ".join(all_owners)
 
     @property
