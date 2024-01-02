@@ -413,61 +413,38 @@ maintenance of Airflow and its database. While database configuration is general
 need to collaborate with the service provider to ensure that the sizing and configuration matches your workflow
 requirements.
 
-Database Monitoring Aspects
-...........................
+What to Monitor on Airflow's Database
+.....................................
 
-Regular monitoring should include:
+Here are some key pointers to observe on Airflow's database:
 
-- CPU, I/O, and memory usage.
-- Query frequency and number.
-- Identification and logging of slow or long-running queries.
-- Detection of inefficient query execution plans.
-- Analysis of disk swap versus memory usage and cache swapping frequency.
+- **CPU, I/O, and memory usage**: Ensure a safe threshold between the observed resource consumption and available resources.
+- **Query frequency and number**: A high query frequency could indicate poor configuration or code practices such as fetching connections in :ref:`top level code<best_practices/top_level_code>`.
+- **Identification of long-running queries**: Long-running queries can impact database performance. Consider :ref:`purging historical metadata<cli-db-clean>` periodically.
+- **Analysis of disk swap versus memory usage and cache swapping frequency**
 
-Tools and Strategies
-....................
-
-- Airflow doesn't provide direct tooling for database monitoring.
-- Use server-side monitoring and logging to obtain metrics.
-- Enable tracking of long-running queries based on defined thresholds.
-- Regularly run house-keeping tasks (such as ``ANALYZE`` SQL command) for maintenance.
-
-Database Cleaning Tools
-.......................
+While Airflow doesn't provide direct tooling for database monitoring, we do offer several helper utilities for
+maintaining the database:
 
 - **``airflow db clean`` command**: Utilize the ``airflow db clean`` command to purge old records in the Airflow
   database.
 - **Python methods in ``airflow.utils.db_cleanup``**: This module provides additional Python methods for
   database cleanup and maintenance, offering more fine-grained control and customization for specific needs.
 
-Recommendations
-...............
-
-- **Proactive Monitoring**: Implement monitoring and logging in production without significantly
-  impacting performance.
-- **Database-Specific Guidance**: Consult the chosen database's documentation for specific monitoring
-  setup instructions.
-- **Managed Database Services**: Check if automatic maintenance tasks are available with your
-  database provider.
-
 SQLAlchemy Logging
 ..................
 
-For detailed query analysis, enable SQLAlchemy client logging by configuring ``{"echo": True}`` in SQLAlchemy
-engine configuration, see :ref:`config:database__sql_alchemy_engine_args` and
+For detailed query analysis, enable SQLAlchemy client logging by configuring ``{"echo": True}`` in
+SQLAlchemy's engine configuration, see :ref:`config:database__sql_alchemy_engine_args` and
 `SQLAlchemy logging documentation <https://docs.sqlalchemy.org/en/14/core/engines.html#configuring-logging>`_.
+This will log every query run on the database. Note that query logging can generate a lot of logs and affect
+Airflow's performance.
 
-Note that query logging can generate a lot of logs and affect Airflow's performance.
+Database Monitoring Pointers
+............................
 
-Caution
-.......
+For monitoring in general, but database monitoring in particular, we advise to:
 
 - Be mindful of the impact on Airflow's performance and system resources when enabling extensive logging.
 - Prefer server-side monitoring over client-side logging for production environments to minimize
   performance interference.
-
-What's next?
-------------
-
-By default, Airflow uses ``SequentialExecutor``, which does not provide parallelism. You should consider
-configuring a different :doc:`executor </core-concepts/executor/index>` for better performance.
